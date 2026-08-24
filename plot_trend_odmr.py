@@ -20,6 +20,7 @@ from pathlib import Path
 from scipy.optimize import curve_fit
 
 SAT_FIT = 0
+HILL_FIT = 1
 PL_OUTPUT_FD = "PL_analysis"
 
 pl_out_fd = Path(PL_OUTPUT_FD)
@@ -32,6 +33,9 @@ pl_out_fd.mkdir(parents=True, exist_ok=True)
 def sat_fit(x, I_sat, P_sat, c):
     return I_sat * x / (P_sat + x) + c * x
 
+
+def Hill_fit(x, L, K, n):
+    return L * x**n/(K**n + x**n)
 
 def fit_saturation(power, counts):
     p0 = [
@@ -77,6 +81,7 @@ def _scatter_with_trend(
     y_err: np.ndarray | None,
     label: str,
     color: str,
+    trend_type: str
 ):
     """Plot measurements with optional error bars and a linear trendline."""
 
@@ -104,13 +109,10 @@ def _scatter_with_trend(
 
     if len(x) >= 3:
         try:
-            if SAT_FIT:    
-                popt, pcov = fit_saturation(
-                    x,
-                    y,
-                )
+            if trend_type == "shift" and HILL_FIT==1:    
+                popt, pcov = curve_fit(Hill_fit, x, y, [1.342579, 360.5261, 5])
 
-                I_sat, P_sat, c = popt
+                L, K, n = popt
 
                 # Smooth curve for plotting
                 x_fit = np.linspace(
@@ -118,13 +120,22 @@ def _scatter_with_trend(
                     x.max(),
                     300,
                 )
+                y_fit = Hill_fit(x_fit, *popt)
+                y_exp = Hill_fit(x, *popt)
 
-                y_fit = sat_fit(
-                    x_fit,
-                    I_sat,
-                    P_sat,
-                    c,
-                )
+                # Chi-squared
+                chi2 = np.sum(((y - y_exp) / y_err)**2)
+
+                # Degrees of freedom
+                dof = len(y) - len(popt)
+
+                # Reduced chi-squared
+                chi2_red = chi2 / dof
+                if chi2_red>0.8 and chi2_red<1.2:
+                    print(60*"=")
+
+                print("Chi² =", chi2)
+                print("Reduced Chi² =", chi2_red)
 
             else: raise ValueError
 
@@ -201,6 +212,7 @@ def _plot_value_vs_temperature_by_area(
                 y_err,
                 label=f"Emitter {emitter_id}",
                 color=color,
+                trend_type="shift"
             )
 
         _finalize_and_save(
@@ -271,6 +283,13 @@ def plot_PL5_peakshift_vs_temperature(
         pl5["x0"]
         - pl5.groupby(["area", "emitter"])["x0"].transform("first")
     )
+
+    pl5["x0_u"] = np.sqrt(
+            pl5["x0_u"]**2
+            + pl5.groupby(["area", "emitter"])["x0"].transform("first")**2
+        )
+
+    pl5 = pl5[pl5.groupby(["area", "emitter"]).cumcount() > 0].copy()
 
     _plot_value_vs_temperature_by_area(
         pl5,
@@ -400,6 +419,14 @@ def plot_PL6_peakshift_vs_temperature(
         - pl6.groupby(["area", "emitter"])["mean_x0"].transform("first")
     )
 
+    pl6["mean_x0_u"] = np.sqrt(
+            pl6["mean_x0_u"]**2
+            + pl6.groupby(["area", "emitter"])["mean_x0_u"].transform("first")**2
+        )
+    
+    # pl6 = pl6.groupby(["area", "emitter"], group_keys=False).apply(lambda g: g.iloc[1:]).reset_index(drop=True)
+    pl6 = pl6[pl6.groupby(["area", "emitter"]).cumcount() > 0].copy()
+
     _plot_value_vs_temperature_by_area(
         pl6,
         value_col="mean_x0",
@@ -468,12 +495,12 @@ if __name__ == "__main__":
 
     df = pd.read_csv("all_PL_peaks_all_samples.csv")
 
-    plot_PL5_peak_vs_temperature(df)
+    # plot_PL5_peak_vs_temperature(df)
     plot_PL5_peakshift_vs_temperature(df)
-    plot_fwhm_vs_temperature(df)
+    # plot_fwhm_vs_temperature(df)
     pl6_pairs = _pair_PL6_dips(df)
 
-    plot_PL6_mean_vs_temperature(pl6_pairs)
+    # plot_PL6_mean_vs_temperature(pl6_pairs)
     plot_PL6_peakshift_vs_temperature(pl6_pairs)
 
-    plot_PL6_splitting_vs_temperature(pl6_pairs)
+    # plot_PL6_splitting_vs_temperature(pl6_pairs)

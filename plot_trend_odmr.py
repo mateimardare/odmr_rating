@@ -20,7 +20,7 @@ from pathlib import Path
 from scipy.optimize import curve_fit
 
 SAT_FIT = 0
-HILL_FIT = 1
+HILL_FIT = 0
 PL_OUTPUT_FD = "PL_analysis"
 
 pl_out_fd = Path(PL_OUTPUT_FD)
@@ -36,6 +36,11 @@ def sat_fit(x, I_sat, P_sat, c):
 
 def Hill_fit(x, L, K, n):
     return L * x**n/(K**n + x**n)
+
+
+def Hill_fit_from200(x, L, K, n):
+    return L * (x-200)**n/(K**n + (x-200)**n)
+
 
 def fit_saturation(power, counts):
     p0 = [
@@ -122,7 +127,7 @@ def _scatter_with_trend(
                 )
                 y_fit = Hill_fit(x_fit, *popt)
                 y_exp = Hill_fit(x, *popt)
-
+                '''
                 # Chi-squared
                 chi2 = np.sum(((y - y_exp) / y_err)**2)
 
@@ -136,6 +141,7 @@ def _scatter_with_trend(
 
                 print("Chi² =", chi2)
                 print("Reduced Chi² =", chi2_red)
+                '''
 
             else: raise ValueError
 
@@ -163,6 +169,128 @@ def _scatter_with_trend(
         color=color
     )
 
+
+def _scatter_with_trend_from0(
+    ax,
+    x: np.ndarray,
+    y: np.ndarray,
+    y_err: np.ndarray | None,
+    label: str,
+    color: str,
+    trend_type: str
+):
+    """Plot measurements with optional error bars and a linear trendline."""
+
+    if y_err is not None:
+        ax.errorbar(
+            x,
+            y,
+            yerr=y_err,
+            fmt="o",
+            markersize=6,
+            capsize=4,
+            alpha=0.7,
+            label=label,
+            color=color
+        )
+    else:
+        ax.scatter(
+            x,
+            y,
+            s=35,
+            alpha=0.7,
+            label=label,
+            color=color
+        )
+
+    if len(x) >= 3:
+        try:    
+            popt, pcov = curve_fit(Hill_fit, x, y, [1.342579, 360.5261, 5])
+
+            L, K, n = popt
+
+            # Smooth curve for plotting
+            x_fit = np.linspace(
+                0,
+                x.max(),
+                300,
+            )
+            y_fit = Hill_fit(x_fit, *popt)
+
+        except (RuntimeError, ValueError) as e:
+            print(f"Exception type: {type(e).__name__}")
+            print(f"Error message: {e}")
+            exit(1)
+
+    ax.plot(
+        x_fit,
+        y_fit,
+        linestyle="--",
+        alpha=0.8,
+        color=color
+    )
+
+
+def _scatter_with_trend_from200(
+    ax,
+    x: np.ndarray,
+    y: np.ndarray,
+    y_err: np.ndarray | None,
+    label: str,
+    color: str,
+    trend_type: str
+):
+    """Plot measurements with optional error bars and a linear trendline."""
+
+    if y_err is not None:
+        ax.errorbar(
+            x,
+            y,
+            yerr=y_err,
+            fmt="o",
+            markersize=6,
+            capsize=4,
+            alpha=0.7,
+            label=label,
+            color=color
+        )
+    else:
+        ax.scatter(
+            x,
+            y,
+            s=35,
+            alpha=0.7,
+            label=label,
+            color=color
+        )
+
+    if len(x) >= 3:
+        try:    
+            popt, pcov = curve_fit(Hill_fit_from200, x, y, [1.342579, 360.5261, 5])
+
+            L, K, n = popt
+            print("Fitted parameters:")
+            for i, value in enumerate(popt):
+                print(f"  Parameter {i}: {value:.6g}")
+
+            # Smooth curve for plotting
+            x_fit = np.linspace(
+                200,
+                x.max(),
+                300,
+            )
+            y_fit = Hill_fit_from200(x_fit, *popt)
+
+            ax.plot(
+                    x_fit,
+                    y_fit,
+                    linestyle="--",
+                    alpha=0.8,
+                    color=color
+                )
+            
+        except (RuntimeError, ValueError):
+            print(ValueError)
 
 def _plot_value_vs_temperature_by_area(
     data: pd.DataFrame,

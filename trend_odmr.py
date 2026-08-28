@@ -139,6 +139,45 @@ def fit_PL5(x: np.ndarray, y: np.ndarray):
     return fitres, xplot, yplot
 
 
+def fit_multiple_PL5(x: np.ndarray, y: np.ndarray):
+    """Fit PL5 ODMR spectrum."""
+
+    fitter = paramFITclass()
+
+    startparam = {}
+    startparam['B'] = np.amax(y)
+    step = x[-1] - x[-2]
+
+    # if x[-1] < 1385:
+    #     new_points = x[-1] + step * np.arange(1, 11)
+    #     x = np.concatenate([x, new_points])
+    
+    if x[np.argmin(y)] in range(1342, 1355):
+        startparam['x0'] = x[np.argmin(y)]
+        startparam['A'] = np.amax(y) - np.amin(y)
+    else: 
+        startparam['x0'] = 1350
+        startparam['A'] = y[len(y)/2]
+
+    tmp = np.sum(y < (startparam['B'] - startparam['A'] / 2))
+    startparam['gamma'] = 0.5 * np.absolute((x[-1] - x[0]) / len(x)) * tmp
+    if tmp < 1:
+        tmp = 1
+
+
+    fitres, xplot, yplot, _yplot_guess = (
+        fitter.fitLorentzianSingleDip(
+            x,
+            y,
+            printresults=False,
+            startparam = startparam
+        )
+    )
+
+    return fitres, xplot, yplot
+
+
+
 def fit_PL6(x: np.ndarray, y: np.ndarray):
     """Fit PL6 ODMR spectrum."""
 

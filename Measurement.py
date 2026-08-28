@@ -485,17 +485,23 @@ def fit_g2_antibunching(x: np.ndarray, y: np.ndarray, *, p0=None, maxfev: int = 
     return FitResult(model=model, popt=popt, pcov=pcov, param_names=["g2_0", "tau", "c"])
  
 
+def _lorentzian_dip(f: np.ndarray, A: float, gamma: float, f0: float) -> np.ndarray:
+    """A single Lorentzian dip shape (to be subtracted from a baseline).
+    A = dip depth, gamma = FWHM, f0 = dip center.
+    """
+    return A * (gamma / 2) ** 2 / ((f - f0) ** 2 + (gamma / 2) ** 2)
+
 
 def _lorentzian_dips(f: np.ndarray, y0: float, *shape_params: float) -> np.ndarray:
     """Flat baseline y0 minus a sum of Lorentzian dips.
     shape_params = [A_1..A_n, gamma_1..gamma_n, f0_1..f0_n]
-    (A = dip depth, gamma = FWHM, f0 = dip center)
     """
     n = len(shape_params) // 3
     A, gamma, f0 = shape_params[:n], shape_params[n:2 * n], shape_params[2 * n:3 * n]
+
     y = np.full_like(f, y0, dtype=float)
     for Ai, gi, fi in zip(A, gamma, f0):
-        y = y - Ai * (gi / 2) ** 2 / ((f - fi) ** 2 + (gi / 2) ** 2)
+        y = y - _lorentzian_dip(f, Ai, gi, fi)
     return y
 
 
@@ -556,6 +562,46 @@ def fit_lorentzian_dips(x: np.ndarray, y: np.ndarray, *, n_peaks: Optional[int] 
         + [f"f0_{i}" for i in range(n)]
     )
     return FitResult(model=model, popt=popt, pcov=pcov, param_names=names, extra={"n_peaks": n})
+
+
+@fit_registry.register("lorentzian_dips_pl5")
+def fit_lorentzian_dips_pl5(x: np.ndarray, y: np.ndarray, *, p0: Optional[list] = None, **kwargs) -> FitResult:
+    """Two-dip Lorentzian fit for the PL5 defect, seeded with its known
+    dip positions (~1345, ~1370) instead of relying on find_peaks -- use
+    this when auto-detection on 'lorentzian_dips' picks the wrong
+    features (e.g. a shallow or overlapping PL5 doublet).
+ 
+    If the real scan doesn't reach far enough to cover the second dip's
+    expected position (~1370), the x-range is padded up to 1385 using the
+    real sample spacing. Since there's no real measurement in the padded
+    region, y is extrapolated as a flat baseline (median of the last 10
+    real points) rather than left undefined -- curve_fit needs x and y to
+    be the same length, and an undefined region would otherwise bias the
+    fit toward whatever curve_fit happens to do with mismatched arrays
+    (it would just error out).
+ 
+    Note: the padded points are *not* real data -- they tell the fit
+    "assume flat/no dip out here", which helps constrain the second dip's
+    position when your scan barely covers it, but will silently mask a
+    real feature if the true spectrum isn't flat beyond your scan range.
+    Sanity-check the fit against the actual data (e.g. `m.plot()`) rather
+    than trusting the padded region blindly.
+    """
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+ 
+    if x[-1] < 1385:
+        step = np.median(np.diff(x))
+        new_x = x[-1] + step * np.arange(1, 20)
+        new_x = new_x[new_x <= 1385]
+        baseline_guess = np.median(y[-10:])
+        x = np.concatenate([x, new_x])
+        y = np.concatenate([y, np.full_like(new_x, baseline_guess)])
+ 
+    if p0 is None:
+        p0 = [np.median(y), 1000, 1000, 5, 5, 1345, 1375]  # y0, A0,A1, gamma0,gamma1, f0_0,f0_1
+ 
+    return fit_lorentzian_dips(x, y, p0=p0, **kwargs)
 
 
 # ===========================================================================
@@ -645,7 +691,7 @@ if __name__ == "__main__":
         print(__doc__)
     '''
 
-    IN_FOLDER = Path(r"measurements\area45\T220-2_Oimplant_1E11_annealed_area45_0degC")
+    IN_FOLDER = Path(r"D:\work\odmr_sel_data\SELECTED_MEASUREMENTS\PL5\AREA45\0degC")
     OUT_FOLDER = Path("processed")
     rows = []
     for fd in IN_FOLDER.iterdir():
@@ -654,35 +700,35 @@ if __name__ == "__main__":
 
         sample = load_sample(fd)
 
-        if "g2" not in sample:
-            print(f"skipping {fd.name}: no g2 measurement found")
+        if "odmr" not in sample:
+            print(f"skipping {fd.name}: no ODMR measurement found")
             continue
 
-        g2 = sample["g2"]
+        meas = sample["odmr"]
 
         try:
-            res = g2.fit()
+            res = meas.fit(routine="lorentzian_dips_pl5")
         except RuntimeError as e:
-            print(f"skipping {fd.name}: g2 fit failed ({e})")
+            print(f"skipping {fd.name}: pl5 fit failed ({e})")
             continue
 
-        print(g2)
+        print(meas)
 
-        g2_0, g2_0_u = res.params()["g2_0"]
-        n_emitters = 1 / (1 - g2_0) if g2_0 < 1 else float("nan")
+        # g2_0, g2_0_u = res.params()["g2_0"]
+        # n_emitters = 1 / (1 - g2_0) if g2_0 < 1 else float("nan")
 
-        rows.append({
-            "sample": sample.name,
-            "g2_0": g2_0,
-            "g2_0_u": g2_0_u,
-            "n_emitters": n_emitters,
-        })
+        # rows.append({
+        #     "sample": sample.name,
+        #     "g2_0": g2_0,
+        #     "g2_0_u": g2_0_u,
+        #     "n_emitters": n_emitters,
+        # })
 
         out_dir = OUT_FOLDER / IN_FOLDER.name
         out_dir.mkdir(parents=True, exist_ok=True)
-        fig, ax = g2.plot()
+        fig, ax = meas.plot()
         fig.savefig(out_dir / f"{sample.name}.png", dpi=150, bbox_inches="tight")
         plt.close(fig)
 
-    df = pd.DataFrame(rows)
-    df.to_csv(OUT_FOLDER / "g2_summary.csv", index=False)
+    # df = pd.DataFrame(rows)
+    # df.to_csv(OUT_FOLDER / "g2_summary.csv", index=False)

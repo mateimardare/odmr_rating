@@ -5,9 +5,7 @@ import matplotlib.pyplot as plt
 import h5py
 from scipy.optimize import curve_fit
 import numpy as np
-
-from sample_utils import parse_sample_name
-
+from odmr_all_data import parse_sample_name
 # measurements/<batch_name>/<sample_dirs...>
 # each batch (e.g. "T220-20_Oimplant_1E11_annealed_area56") gets its own
 # mirrored output folder: processed/<batch_name>/sat_g2_odmr/<sample>.png

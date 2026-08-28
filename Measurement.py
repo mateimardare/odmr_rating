@@ -299,7 +299,7 @@ class Measurement:
     # -- plotting -------------------------------------------------------------
     def plot(self, ax=None, *, show_fit: bool = True, **data_kwargs):
         if ax is None:
-            fig, ax = plt.subplots(figsize=(6, 4))
+            fig, ax = plt.subplots(figsize=(8, 6))
         else:
             fig = ax.figure
 
@@ -314,7 +314,7 @@ class Measurement:
 
         ax.set_xlabel(self.x_label)
         ax.set_ylabel(self.y_label)
-        ax.set_title(self.name)
+        ax.set_title(self.type_name)
         ax.legend()
         return fig, ax
 
@@ -434,16 +434,56 @@ def fit_saturation(x: np.ndarray, y: np.ndarray, *, p0=None, **kwargs) -> FitRes
 
 
 @fit_registry.register("g2_antibunching")
-def fit_g2_antibunching(x: np.ndarray, y: np.ndarray, *, p0=None, **kwargs) -> FitResult:
+def fit_g2_antibunching(x: np.ndarray, y: np.ndarray, *, p0=None, maxfev: int = 10000, **kwargs) -> FitResult:
     """c * (1 - (1 - g2_0) * exp(-|t| / tau)) -- single-exponential
     antibunching dip, the simplest standard g(2) model.
+ 
+    Real g(2) traces vary a lot in x-units (ns vs ps) and y-scale (raw
+    coincidence counts, sometimes millions), so the initial guess is built
+    from the data's own min/max/width rather than fixed numbers, and the
+    default `maxfev` is raised well above scipy's default of 800 -- real,
+    noisy data routinely needs more iterations to converge.
     """
+    x = np.asarray(x, dtype=float)
+    y = np.asarray(y, dtype=float)
+ 
+    if p0 is None:
+        y_min, y_max = y.min(), y.max()
+        c0 = y_max if y_max > 0 else 1.0
+        g2_0_guess = float(np.clip(y_min / c0, 0.0, 1.0)) if c0 else 0.0
+ 
+        # width guess: half-width of the dip, from where y first crosses
+        # halfway between its min and max -- robust even if x isn't
+        # centered on zero or isn't evenly spaced.
+        half = y_min + (y_max - y_min) / 2
+        below_half = x[y <= half]
+        if len(below_half) > 1:
+            tau0 = (below_half.max() - below_half.min()) / 2
+        else:
+            tau0 = np.ptp(x) / 10
+        tau0 = max(tau0, np.ptp(x) / len(x), 1e-6)  # never below one sample spacing
+ 
+        p0 = [g2_0_guess, tau0, c0]
+ 
     def model(t, g2_0, tau, c):
         return c * (1 - (1 - g2_0) * np.exp(-np.abs(t) / tau))
-
-    p0 = p0 or [max(y.min() / max(y.max(), 1e-9), 0.0), np.ptp(x) / 10 or 1.0, y.max()]
-    popt, pcov = curve_fit(model, x, y, p0=p0)
+ 
+    # bounds keep the optimizer from wandering into unphysical territory
+    # (negative tau, negative baseline) which is a common cause of
+    # non-convergence on noisy real data
+    bounds = ([0, 1e-9, 0], [np.inf, np.inf, np.inf])
+ 
+    try:
+        popt, pcov = curve_fit(model, x, y, p0=p0, bounds=bounds, maxfev=maxfev)
+    except RuntimeError as e:
+        raise RuntimeError(
+            f"g2 fit failed to converge from p0={p0}. Try passing an explicit "
+            f"p0=[g2_0, tau, c] based on what the raw data actually looks like "
+            f"(plot with show_fit=False first), or a larger maxfev. Original error: {e}"
+        ) from e
+ 
     return FitResult(model=model, popt=popt, pcov=pcov, param_names=["g2_0", "tau", "c"])
+ 
 
 
 def _lorentzian_dips(f: np.ndarray, y0: float, *shape_params: float) -> np.ndarray:
@@ -502,7 +542,7 @@ def fit_lorentzian_dips(x: np.ndarray, y: np.ndarray, *, n_peaks: Optional[int] 
         gamma0 = np.full(n, (x.max() - x.min()) / (10 * max(n, 1)))
         p0 = [y0_guess, *A0, *gamma0, *f0_0]
     else:
-        n = (len(p0) - 1) // 3
+        n = (len(p0)-1) // 3
 
     def model(f, *params):
         return _lorentzian_dips(f, params[0], *params[1:])
@@ -604,10 +644,45 @@ if __name__ == "__main__":
     else:
         print(__doc__)
     '''
-    folder_path = r"measurements\area55\T220-2_Oimplant_1E11_annealed_area55_450degC\2026_08_06_12_50_52_946126_cwODMR_noSAT_nog2_0"
-    out_plot = "test.png"
-    folder = Path(folder_path)
-    sample = load_sample(folder)
-    print(sample)
-    sample.fit_all()
-    sample.plot_grid(save_path=Path(out_plot))
+
+    IN_FOLDER = Path(r"measurements\area45\T220-2_Oimplant_1E11_annealed_area45_0degC")
+    OUT_FOLDER = Path("processed")
+    rows = []
+    for fd in IN_FOLDER.iterdir():
+        if not fd.is_dir():
+            continue
+
+        sample = load_sample(fd)
+
+        if "g2" not in sample:
+            print(f"skipping {fd.name}: no g2 measurement found")
+            continue
+
+        g2 = sample["g2"]
+
+        try:
+            res = g2.fit()
+        except RuntimeError as e:
+            print(f"skipping {fd.name}: g2 fit failed ({e})")
+            continue
+
+        print(g2)
+
+        g2_0, g2_0_u = res.params()["g2_0"]
+        n_emitters = 1 / (1 - g2_0) if g2_0 < 1 else float("nan")
+
+        rows.append({
+            "sample": sample.name,
+            "g2_0": g2_0,
+            "g2_0_u": g2_0_u,
+            "n_emitters": n_emitters,
+        })
+
+        out_dir = OUT_FOLDER / IN_FOLDER.name
+        out_dir.mkdir(parents=True, exist_ok=True)
+        fig, ax = g2.plot()
+        fig.savefig(out_dir / f"{sample.name}.png", dpi=150, bbox_inches="tight")
+        plt.close(fig)
+
+    df = pd.DataFrame(rows)
+    df.to_csv(OUT_FOLDER / "g2_summary.csv", index=False)
